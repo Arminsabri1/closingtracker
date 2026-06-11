@@ -3,9 +3,6 @@
 //   prospects: [{ closer, appointmentDate, status }]
 //   closers:   ['Tyler', 'Jeshua', ...]   (unique closer names found)
 //   fetched_at: ISO timestamp
-//
-// Source: "Prospect" table in the Inbound Home Service PPL base.
-// Closer (singleSelect), Status (singleSelect), Appointment Date (dateTime).
 
 const BASE_ID = 'appG9APSCkeYOQLbl';
 const TABLE_ID = 'tblxy8uy1rn7YySk7'; // Prospect
@@ -23,8 +20,9 @@ async function fetchAll(apiKey) {
   do {
     const params = new URLSearchParams({
       pageSize: '100',
-      'fields[]': F.closer,
+      returnFieldsByFieldId: 'true',
     });
+    params.append('fields[]', F.closer);
     params.append('fields[]', F.status);
     params.append('fields[]', F.appointmentDate);
     if (offset) params.set('offset', offset);
@@ -62,7 +60,8 @@ export default async function handler(req, res) {
       const statusRaw = f[F.status];
       const apptRaw = f[F.appointmentDate];
 
-      // Airtable returns singleSelect as either an object {id,name,color} or just a string
+      // singleSelect comes back as {id,name,color} when returnFieldsByFieldId=true,
+      // but be defensive and also accept plain strings
       const closer = typeof closerRaw === 'string'
         ? closerRaw
         : (closerRaw && closerRaw.name) || null;
@@ -79,7 +78,7 @@ export default async function handler(req, res) {
         id: rec.id,
         closer,
         status: status || null,
-        appointmentDate: apptRaw, // ISO datetime string
+        appointmentDate: apptRaw,
       });
     }
 
