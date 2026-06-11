@@ -1,6 +1,7 @@
 // POST /api/eod-submit
 // Body: { closer, date, energy, focus, biology, calls, offers, closes, rollup, objections }
 // Creates or replaces a Closer EOD record for the given (closer, date) pair.
+// typecast: true lets Airtable auto-add new closer names to the singleSelect.
 
 const BASE_ID = 'appG9APSCkeYOQLbl';
 const TABLE_ID = 'tblZfN07lZJ6pG6sk';
@@ -54,7 +55,7 @@ export default async function handler(req, res) {
           Authorization: `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ fields }),
+        body: JSON.stringify({ fields, typecast: true }),
       });
     } else {
       saveRes = await fetch(`https://api.airtable.com/v0/${BASE_ID}/${TABLE_ID}`, {
@@ -63,7 +64,7 @@ export default async function handler(req, res) {
           Authorization: `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ fields }),
+        body: JSON.stringify({ fields, typecast: true }),
       });
     }
     if (!saveRes.ok) {
