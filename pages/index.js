@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 
 // Fallback if /api/prospects hasn't loaded yet
@@ -9,33 +8,52 @@ const CLOSED_STATUSES = new Set(['Closed Won', 'Sent to Baryo']);
 // Statuses that mean we haven't contacted the prospect yet
 const UNCONTACTED_STATUSES = new Set(['Hotlist', 'Follow Up']);
 
+const DATE_PRESETS = ['Today', 'Yesterday', 'Last 7 days', 'Last 14 days', 'Last 30 days', 'Month to date', 'Custom'];
+
 // ─── helpers ────────────────────────────────────────────────────────────────
-const todayISO = () => {
-  const d = new Date();
-  const yr = d.getFullYear();
-  const mo = String(d.getMonth() + 1).padStart(2, '0');
-  const dy = String(d.getDate()).padStart(2, '0');
-  return `${yr}-${mo}-${dy}`;
-};
-const fmtPct = (n) => n.toFixed(0) + '%';
+const pad2 = (n) => String(n).padStart(2, '0');
+const toISODate = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+
+const todayISO = () => toISODate(new Date());
+
 const fmtPct1 = (n) => n.toFixed(1) + '%';
 
-// Accepts both 'YYYY-MM-DD' and full ISO datetimes
-const dateInWindow = (iso, preset) => {
-  if (!iso) return false;
-  const datePart = iso.includes('T') ? iso.slice(0, 10) : iso;
-  const d = new Date(datePart + 'T12:00:00');
+// Convert a preset name into { start, end } date strings (YYYY-MM-DD).
+function presetToRange(preset) {
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const diff = (today - d) / 86400000;
-  if (preset === 'Today') return diff < 1 && diff >= 0;
-  if (preset === 'Yesterday') return diff >= 1 && diff < 2;
-  if (preset === 'Last 7 days') return diff < 7 && diff >= 0;
-  if (preset === 'Last 14 days') return diff < 14 && diff >= 0;
-  if (preset === 'Last 30 days') return diff < 30 && diff >= 0;
-  if (preset === 'Month to date') return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear() && diff >= 0;
-  return true;
-};
+
+  if (preset === 'Today') return { start: toISODate(today), end: toISODate(today) };
+  if (preset === 'Yesterday') {
+    const y = new Date(today); y.setDate(y.getDate() - 1);
+    return { start: toISODate(y), end: toISODate(y) };
+  }
+  if (preset === 'Last 7 days') {
+    const s = new Date(today); s.setDate(s.getDate() - 6);
+    return { start: toISODate(s), end: toISODate(today) };
+  }
+  if (preset === 'Last 14 days') {
+    const s = new Date(today); s.setDate(s.getDate() - 13);
+    return { start: toISODate(s), end: toISODate(today) };
+  }
+  if (preset === 'Last 30 days') {
+    const s = new Date(today); s.setDate(s.getDate() - 29);
+    return { start: toISODate(s), end: toISODate(today) };
+  }
+  if (preset === 'Month to date') {
+    const s = new Date(today.getFullYear(), today.getMonth(), 1);
+    return { start: toISODate(s), end: toISODate(today) };
+  }
+  return { start: null, end: null };
+}
+
+// Accepts both 'YYYY-MM-DD' and full ISO datetimes
+function dateInRange(iso, range) {
+  if (!iso) return false;
+  if (!range || !range.start || !range.end) return true;
+  const datePart = iso.includes('T') ? iso.slice(0, 10) : iso;
+  return datePart >= range.start && datePart <= range.end;
+}
 
 // ─── component ──────────────────────────────────────────────────────────────
 export default function CloserTracker() {
@@ -124,7 +142,7 @@ export default function CloserTracker() {
         {activeTab === 'eod' && <EodForm entries={entries} closers={closers} onSubmitted={refresh} />}
 
         <div style={{ fontSize: 11.5, color: '#a99c87', textAlign: 'center', marginTop: 28, lineHeight: 1.7 }}>
-          Close rate & contact rate pulled live from Prospect table. EOD metrics from Closer EOD table.
+          Closes, close rate & contact rate from Prospect table. Calls & offers from Closer EOD table.
         </div>
 
       </div>
@@ -159,9 +177,10 @@ function Tabs({ activeTab, setActiveTab }) {
 }
 
 // ─── Prospect stats helper ──────────────────────────────────────────────────
-function computeProspectStats(prospects, closer, datePreset) {
+// `closer` can be 'All' to include every closer
+function computeProspectStats(prospects, closer, dateRange) {
   const filtered = prospects.filter(p =>
-    p.closer === closer && dateInWindow(p.appointmentDate, datePreset)
+    (closer === 'All' || p.closer === closer) && dateInRange(p.appointmentDate, dateRange)
   );
   const total = filtered.length;
   const closedCount = filtered.filter(p => CLOSED_STATUSES.has(p.status)).length;
@@ -177,30 +196,54 @@ function computeProspectStats(prospects, closer, datePreset) {
   };
 }
 
+// ─── Date filter (shared) ───────────────────────────────────────────────────
+function DateFilter({ datePreset, setDatePreset, customStart, setCustomStart, customEnd, setCustomEnd }) {
+  if (datePreset === 'Custom') {
+    return (
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+        <SelectInline value={datePreset} onChange={setDatePreset} options={DATE_PRESETS} />
+        <input type="date" value={customStart} onChange={(e) => setCustomStart(e.target.value)} style={{ ...inputStyle, cursor: 'text' }} />
+        <input type="date" value={customEnd} onChange={(e) => setCustomEnd(e.target.value)} style={{ ...inputStyle, cursor: 'text' }} />
+      </div>
+    );
+  }
+  return <SelectInline value={datePreset} onChange={setDatePreset} options={DATE_PRESETS} />;
+}
+
 // ─── Dashboard ──────────────────────────────────────────────────────────────
 function Dashboard({ entries, prospects, closers, loading }) {
-  const [closer, setCloser] = useState(closers[0] || 'Tyler');
+  const [closer, setCloser] = useState('All');
   const [datePreset, setDatePreset] = useState('Last 7 days');
+  const [customStart, setCustomStart] = useState(todayISO());
+  const [customEnd, setCustomEnd] = useState(todayISO());
 
-  // Sync closer with the dynamic list (in case the first list arrives later)
+  // If the selected closer disappears from the list (e.g. data refresh), fall back to All
   useEffect(() => {
-    if (closers.length > 0 && !closers.includes(closer)) {
-      setCloser(closers[0]);
+    if (closer !== 'All' && closers.length > 0 && !closers.includes(closer)) {
+      setCloser('All');
     }
   }, [closers, closer]);
 
+  const dateRange = useMemo(() => {
+    if (datePreset === 'Custom') return { start: customStart, end: customEnd };
+    return presetToRange(datePreset);
+  }, [datePreset, customStart, customEnd]);
+
+  const closerOptions = useMemo(() => ['All', ...closers], [closers]);
+
   const filteredEod = useMemo(() =>
-    entries.filter(e => e.closer === closer && dateInWindow(e.date, datePreset)),
-    [entries, closer, datePreset]
+    entries.filter(e =>
+      (closer === 'All' || e.closer === closer) && dateInRange(e.date, dateRange)
+    ),
+    [entries, closer, dateRange]
   );
 
   const calls = filteredEod.reduce((s, e) => s + e.calls, 0);
   const offers = filteredEod.reduce((s, e) => s + e.offers, 0);
-  const closes = filteredEod.reduce((s, e) => s + e.closes, 0);
 
   const stats = useMemo(
-    () => computeProspectStats(prospects, closer, datePreset),
-    [prospects, closer, datePreset]
+    () => computeProspectStats(prospects, closer, dateRange),
+    [prospects, closer, dateRange]
   );
 
   const closeRateGood = stats.total > 0 && stats.closeRate >= 30;
@@ -208,19 +251,36 @@ function Dashboard({ entries, prospects, closers, loading }) {
 
   return (
     <>
-      <FilterBar
-        closer={closer} setCloser={setCloser}
-        closers={closers}
-        datePreset={datePreset} setDatePreset={setDatePreset}
-      />
+      {/* Filter bar */}
+      <div style={{ background: 'white', border: '1px solid #e8e3da', borderRadius: 14, padding: 12, marginBottom: 18, display: 'grid', gridTemplateColumns: '1fr 1.6fr', gap: 10, alignItems: 'start' }}>
+        <SelectInline value={closer} onChange={setCloser} options={closerOptions} />
+        <DateFilter
+          datePreset={datePreset} setDatePreset={setDatePreset}
+          customStart={customStart} setCustomStart={setCustomStart}
+          customEnd={customEnd} setCustomEnd={setCustomEnd}
+        />
+      </div>
 
       <div style={{ fontSize: 10.5, fontWeight: 600, letterSpacing: '0.14em', color: '#8a7d6b', textTransform: 'uppercase', marginBottom: 10, paddingLeft: 4 }}>
         Performance
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10, marginBottom: 22 }}>
-        <Kpi label="Calls Connected" value={calls} sub={`${filteredEod.length} EOD ${filteredEod.length === 1 ? 'entry' : 'entries'}`} />
-        <Kpi label="Offers Given" value={offers} sub={calls > 0 ? fmtPct((offers/calls)*100) + ' of calls' : '—'} />
-        <Kpi label="Closes" value={closes} sub={calls > 0 ? fmtPct1((closes/calls)*100) + ' of calls' : '—'} tone="accent" />
+        <Kpi
+          label="Calls Connected"
+          value={calls}
+          sub={`${filteredEod.length} EOD ${filteredEod.length === 1 ? 'entry' : 'entries'}`}
+        />
+        <Kpi
+          label="Offers Given"
+          value={offers}
+          sub={calls > 0 ? fmtPct1((offers/calls)*100) + ' of calls' : '—'}
+        />
+        <Kpi
+          label="Closes"
+          value={stats.closedCount}
+          sub={stats.total > 0 ? `${stats.closedCount}/${stats.total} prospects` : 'No prospects in window'}
+          tone="accent"
+        />
         <Kpi
           label="Close Rate"
           value={stats.total > 0 ? fmtPct1(stats.closeRate) : '—'}
@@ -254,27 +314,41 @@ function Dashboard({ entries, prospects, closers, loading }) {
 // ─── Leaderboard ────────────────────────────────────────────────────────────
 function Leaderboard({ entries, prospects, closers }) {
   const [datePreset, setDatePreset] = useState('Last 7 days');
+  const [customStart, setCustomStart] = useState(todayISO());
+  const [customEnd, setCustomEnd] = useState(todayISO());
+
+  const dateRange = useMemo(() => {
+    if (datePreset === 'Custom') return { start: customStart, end: customEnd };
+    return presetToRange(datePreset);
+  }, [datePreset, customStart, customEnd]);
 
   const rows = closers.map(c => {
-    const filteredEod = entries.filter(e => e.closer === c && dateInWindow(e.date, datePreset));
+    const filteredEod = entries.filter(e => e.closer === c && dateInRange(e.date, dateRange));
     const calls = filteredEod.reduce((s, e) => s + e.calls, 0);
     const offers = filteredEod.reduce((s, e) => s + e.offers, 0);
-    const closes = filteredEod.reduce((s, e) => s + e.closes, 0);
-    const stats = computeProspectStats(prospects, c, datePreset);
+    const stats = computeProspectStats(prospects, c, dateRange);
     return {
-      closer: c, calls, offers, closes,
+      closer: c,
+      calls, offers,
+      closes: stats.closedCount,   // from Airtable, not EOD
       total: stats.total,
-      closedCount: stats.closedCount,
-      contactedCount: stats.contactedCount,
       closeRate: stats.closeRate,
       contactRate: stats.contactRate,
     };
-  }).sort((a, b) => b.closedCount - a.closedCount || b.closeRate - a.closeRate);
+  }).sort((a, b) => {
+    // Sort by close rate desc, then closes count desc as tiebreaker
+    if (b.closeRate !== a.closeRate) return b.closeRate - a.closeRate;
+    return b.closes - a.closes;
+  });
 
   return (
     <>
       <div style={{ background: 'white', border: '1px solid #e8e3da', borderRadius: 14, padding: 12, marginBottom: 18 }}>
-        <SelectInline value={datePreset} onChange={setDatePreset} options={['Today', 'Yesterday', 'Last 7 days', 'Last 14 days', 'Last 30 days', 'Month to date']} />
+        <DateFilter
+          datePreset={datePreset} setDatePreset={setDatePreset}
+          customStart={customStart} setCustomStart={setCustomStart}
+          customEnd={customEnd} setCustomEnd={setCustomEnd}
+        />
       </div>
 
       <Card>
@@ -511,15 +585,6 @@ function Kpi({ label, value, sub, tone = 'default' }) {
   );
 }
 
-function FilterBar({ closer, setCloser, closers, datePreset, setDatePreset }) {
-  return (
-    <div style={{ background: 'white', border: '1px solid #e8e3da', borderRadius: 14, padding: 12, marginBottom: 18, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-      <SelectInline value={closer} onChange={setCloser} options={closers} />
-      <SelectInline value={datePreset} onChange={setDatePreset} options={['Today', 'Yesterday', 'Last 7 days', 'Last 14 days', 'Last 30 days', 'Month to date']} />
-    </div>
-  );
-}
-
 const inputStyle = {
   width: '100%', appearance: 'none', background: 'white',
   border: '1px solid #e8e3da', borderRadius: 11,
@@ -620,7 +685,6 @@ function Td({ children, right, style = {} }) {
 function PastEntry({ entry, first }) {
   const submittedAt = entry.submittedAt ? new Date(entry.submittedAt) : null;
   const timeStr = submittedAt ? submittedAt.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '—';
-  const closeRate = entry.calls > 0 ? (entry.closes / entry.calls) * 100 : 0;
   return (
     <div style={{ padding: '16px 20px', borderTop: first ? 'none' : '1px solid #f4efe7' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 }}>
@@ -630,8 +694,7 @@ function PastEntry({ entry, first }) {
       <div style={{ fontSize: 12, color: '#5e5345' }}>
         <strong style={{ color: '#1f1b16', fontWeight: 500 }}>{entry.calls}</strong> calls ·
         {' '}<strong style={{ color: '#1f1b16', fontWeight: 500 }}>{entry.offers}</strong> offers ·
-        {' '}<strong style={{ color: '#1f1b16', fontWeight: 500 }}>{entry.closes}</strong> closes ·
-        {' '}<strong style={{ color: '#1f1b16', fontWeight: 500 }}>{closeRate.toFixed(1)}%</strong> EOD close rate ·
+        {' '}<strong style={{ color: '#1f1b16', fontWeight: 500 }}>{entry.closes}</strong> closes (self-reported) ·
         {' '}Energy <strong style={{ color: '#1f1b16', fontWeight: 500 }}>{entry.energy ?? '—'}</strong>/10 ·
         {' '}Focus <strong style={{ color: '#1f1b16', fontWeight: 500 }}>{entry.focus ?? '—'}</strong>/10
       </div>
