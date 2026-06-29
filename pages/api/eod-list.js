@@ -1,24 +1,8 @@
-// GET /api/eod-list  — returns all EOD submissions, newest first.
+// GET /api/eod-list — returns all EOD submissions, newest first.
 // Reads from the "Closer EOD" table in the Inbound Home Service PPL base.
 
 const BASE_ID = 'appG9APSCkeYOQLbl';
 const TABLE_ID = 'tblZfN07lZJ6pG6sk'; // Closer EOD
-
-// Field IDs from the Airtable schema (locked, won't change even if column renamed)
-const F = {
-  closer: 'fld3k56tR7GPpRMDc',
-  date: 'fldqg3IYG2WxoNQiS',
-  energy: 'fldUF3n3Qv0iW9kvt',
-  focus: 'fldfm8CdQyQzRN3z6',
-  biology: 'fld9PxFEHuzhbvc4z',
-  calls: 'fldWlWS40oM72GoAI',
-  offers: 'fld1x8r0rPMLioJo1',
-  closes: 'fld3XBXpb5nWaNtEN',
-  closeRate: 'flds0c9gLx2OnLps8',
-  rollup: 'fld8GXow3HKPVIXNj',
-  objections: 'fld5qiWhinfxiaJIa',
-  submittedAt: 'fldh701vgbukoP6QY',
-};
 
 export default async function handler(req, res) {
   const apiKey = process.env.AIRTABLE_API_KEY;
@@ -47,6 +31,7 @@ export default async function handler(req, res) {
         energy: f['Energy'] ?? null,
         focus: f['Focus'] ?? null,
         biology: f['Protected Biology'] === true,
+        callsAttempted: Number(f['Calls Attempted']) || 0,
         calls: Number(f['Calls Connected']) || 0,
         offers: Number(f['Offers Given']) || 0,
         closes: Number(f['Closes']) || 0,
