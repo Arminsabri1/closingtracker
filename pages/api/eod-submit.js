@@ -1,10 +1,9 @@
 // POST /api/eod-submit
-// Body: { closer, date, energy, focus, biology, calls, offers, closes, rollup, objections }
-// Creates or replaces a Closer EOD record for the given (closer, date) pair.
-// typecast: true lets Airtable auto-add new closer names to the singleSelect.
+// Body: { closer, date, energy, focus, biology, callsAttempted, calls, offers, closes, rollup, objections }
+// Upserts on (closer, date) — replaces existing record for that pair.
 
 const BASE_ID = 'appG9APSCkeYOQLbl';
-const TABLE_ID = 'tblZfN07lZJ6pG6sk';
+const TABLE_ID = 'tblZfN07lZJ6pG6sk'; // Closer EOD
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -15,8 +14,13 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'AIRTABLE_API_KEY not set in environment' });
   }
 
-  const body = req.body || {};
-  const { closer, date } = body;
+  const {
+    closer, date,
+    energy, focus, biology,
+    callsAttempted, calls, offers, closes,
+    rollup, objections,
+  } = req.body || {};
+
   if (!closer || !date) {
     return res.status(400).json({ error: 'closer and date are required' });
   }
@@ -24,55 +28,52 @@ export default async function handler(req, res) {
   const fields = {
     'Closer': closer,
     'Date': date,
-    'Energy': body.energy != null ? Number(body.energy) : null,
-    'Focus': body.focus != null ? Number(body.focus) : null,
-    'Protected Biology': body.biology === true || body.biology === 'Yes',
-    'Calls Connected': Number(body.calls) || 0,
-    'Offers Given': Number(body.offers) || 0,
-    'Closes': Number(body.closes) || 0,
-    'Daily Rollup': body.rollup || '',
-    'Common Objections': body.objections || '',
+    'Energy': energy ?? null,
+    'Focus': focus ?? null,
+    'Protected Biology': biology === true,
+    'Calls Attempted': Number(callsAttempted) || 0,
+    'Calls Connected': Number(calls) || 0,
+    'Offers Given': Number(offers) || 0,
+    'Closes': Number(closes) || 0,
+    'Daily Rollup': rollup ?? '',
+    'Common Objections': objections ?? '',
     'Submitted At': new Date().toISOString(),
   };
 
   try {
-    // Look for an existing record matching (closer, date)
-    const filterFormula = encodeURIComponent(`AND({Closer}='${closer.replace(/'/g, "\\'")}', DATESTR({Date})='${date}')`);
-    const lookupUrl = `https://api.airtable.com/v0/${BASE_ID}/${TABLE_ID}?filterByFormula=${filterFormula}&maxRecords=1`;
-    const lookup = await fetch(lookupUrl, { headers: { Authorization: `Bearer ${apiKey}` } });
-    if (!lookup.ok) {
-      const text = await lookup.text();
-      return res.status(lookup.status).json({ error: 'Airtable lookup failed', body: text });
+    // Look for an existing record for this (closer, date)
+    const escDate = encodeURIComponent(date);
+    const escCloser = encodeURIComponent(closer.replace(/"/g, '\\"'));
+    const filter = encodeURIComponent(`AND({Closer}="${closer.replace(/"/g, '\\"')}", IS_SAME({Date},"${date}",'day'))`);
+    const findUrl = `https://api.airtable.com/v0/${BASE_ID}/${TABLE_ID}?filterByFormula=${filter}&maxRecords=1`;
+    const findR = await fetch(findUrl, { headers: { Authorization: `Bearer ${apiKey}` }, cache: 'no-store' });
+    if (!findR.ok) {
+      const t = await findR.text();
+      return res.status(findR.status).json({ error: 'Lookup failed', body: t });
     }
-    const lookupJson = await lookup.json();
-    const existing = (lookupJson.records || [])[0];
+    const findJson = await findR.json();
+    const existing = (findJson.records || [])[0];
 
-    let saveRes;
+    let writeR;
     if (existing) {
-      saveRes = await fetch(`https://api.airtable.com/v0/${BASE_ID}/${TABLE_ID}/${existing.id}`, {
+      writeR = await fetch(`https://api.airtable.com/v0/${BASE_ID}/${TABLE_ID}/${existing.id}`, {
         method: 'PATCH',
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-        },
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ fields, typecast: true }),
       });
     } else {
-      saveRes = await fetch(`https://api.airtable.com/v0/${BASE_ID}/${TABLE_ID}`, {
+      writeR = await fetch(`https://api.airtable.com/v0/${BASE_ID}/${TABLE_ID}`, {
         method: 'POST',
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-        },
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ fields, typecast: true }),
       });
     }
-    if (!saveRes.ok) {
-      const text = await saveRes.text();
-      return res.status(saveRes.status).json({ error: 'Airtable save failed', body: text });
+    if (!writeR.ok) {
+      const t = await writeR.text();
+      return res.status(writeR.status).json({ error: 'Write failed', body: t });
     }
-    const saved = await saveRes.json();
-    return res.status(200).json({ ok: true, record: saved, replaced: !!existing });
+    const writeJson = await writeR.json();
+    return res.status(200).json({ ok: true, replaced: !!existing, record: writeJson });
   } catch (err) {
     return res.status(500).json({ error: 'Submit error', message: String(err) });
   }
