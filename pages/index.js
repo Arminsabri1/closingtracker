@@ -1,28 +1,16 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 
-// Fallback if /api/prospects hasn't loaded yet
 const FALLBACK_CLOSERS = ['Tyler', 'Jeshua'];
-
-// Statuses that count as a "closed" deal
-const CLOSED_STATUSES = new Set(['Closed Won', 'Sent to Baryo']);
-// Statuses that mean we haven't contacted the prospect yet
-const UNCONTACTED_STATUSES = new Set(['Hotlist', 'Follow Up']);
-
 const DATE_PRESETS = ['Today', 'Yesterday', 'Last 7 days', 'Last 14 days', 'Last 30 days', 'Month to date', 'Custom'];
 
-// ─── helpers ────────────────────────────────────────────────────────────────
 const pad2 = (n) => String(n).padStart(2, '0');
 const toISODate = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-
 const todayISO = () => toISODate(new Date());
-
 const fmtPct1 = (n) => n.toFixed(1) + '%';
 
-// Convert a preset name into { start, end } date strings (YYYY-MM-DD).
 function presetToRange(preset) {
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-
   if (preset === 'Today') return { start: toISODate(today), end: toISODate(today) };
   if (preset === 'Yesterday') {
     const y = new Date(today); y.setDate(y.getDate() - 1);
@@ -47,7 +35,6 @@ function presetToRange(preset) {
   return { start: null, end: null };
 }
 
-// Accepts both 'YYYY-MM-DD' and full ISO datetimes
 function dateInRange(iso, range) {
   if (!iso) return false;
   if (!range || !range.start || !range.end) return true;
@@ -55,11 +42,9 @@ function dateInRange(iso, range) {
   return datePart >= range.start && datePart <= range.end;
 }
 
-// ─── component ──────────────────────────────────────────────────────────────
 export default function CloserTracker() {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [entries, setEntries] = useState([]);
-  const [prospects, setProspects] = useState([]);
   const [closersFromAirtable, setClosersFromAirtable] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -70,7 +55,7 @@ export default function CloserTracker() {
     setError(null);
     Promise.all([
       fetch('/api/eod-list').then(r => r.json()),
-      fetch('/api/prospects').then(r => r.json()),
+      fetch('/api/prospects').then(r => r.json()).catch(() => ({ closers: [] })),
     ])
       .then(([eodData, prospectsData]) => {
         if (eodData.error) {
@@ -78,13 +63,10 @@ export default function CloserTracker() {
         } else {
           setEntries(eodData.entries || []);
         }
-        if (prospectsData.error) {
-          setError(prev => (prev ? prev + ' · ' : '') + 'Prospects: ' + prospectsData.error + (prospectsData.message ? ': ' + prospectsData.message : ''));
-        } else {
-          setProspects(prospectsData.prospects || []);
-          setClosersFromAirtable(prospectsData.closers || []);
+        if (prospectsData && prospectsData.closers) {
+          setClosersFromAirtable(prospectsData.closers);
         }
-        setFetchedAt(eodData.fetched_at || prospectsData.fetched_at || null);
+        setFetchedAt(eodData.fetched_at || null);
         setLoading(false);
       })
       .catch(err => { setError(String(err)); setLoading(false); });
@@ -92,7 +74,6 @@ export default function CloserTracker() {
 
   useEffect(() => { refresh(); }, [refresh]);
 
-  // Union of closers from Airtable + any closers we've seen in EOD entries
   const closers = useMemo(() => {
     const s = new Set(closersFromAirtable);
     for (const e of entries) if (e.closer) s.add(e.closer);
@@ -137,12 +118,12 @@ export default function CloserTracker() {
           </div>
         )}
 
-        {activeTab === 'dashboard' && <Dashboard entries={entries} prospects={prospects} closers={closers} loading={loading} />}
-        {activeTab === 'leaderboard' && <Leaderboard entries={entries} prospects={prospects} closers={closers} />}
+        {activeTab === 'dashboard' && <Dashboard entries={entries} closers={closers} loading={loading} />}
+        {activeTab === 'leaderboard' && <Leaderboard entries={entries} closers={closers} />}
         {activeTab === 'eod' && <EodForm entries={entries} closers={closers} onSubmitted={refresh} />}
 
         <div style={{ fontSize: 11.5, color: '#a99c87', textAlign: 'center', marginTop: 28, lineHeight: 1.7 }}>
-          Closes, close rate & contact rate from Prospect table. Calls & offers from Closer EOD table.
+          All metrics pulled live from Closer EOD table (self-reported by closer).
         </div>
 
       </div>
@@ -150,7 +131,6 @@ export default function CloserTracker() {
   );
 }
 
-// ─── Tabs ───────────────────────────────────────────────────────────────────
 function Tabs({ activeTab, setActiveTab }) {
   const tabs = [
     { id: 'dashboard',  label: 'Dashboard' },
@@ -176,27 +156,6 @@ function Tabs({ activeTab, setActiveTab }) {
   );
 }
 
-// ─── Prospect stats helper ──────────────────────────────────────────────────
-// `closer` can be 'All' to include every closer
-function computeProspectStats(prospects, closer, dateRange) {
-  const filtered = prospects.filter(p =>
-    (closer === 'All' || p.closer === closer) && dateInRange(p.appointmentDate, dateRange)
-  );
-  const total = filtered.length;
-  const closedCount = filtered.filter(p => CLOSED_STATUSES.has(p.status)).length;
-  const uncontactedCount = filtered.filter(p => UNCONTACTED_STATUSES.has(p.status)).length;
-  const contactedCount = total - uncontactedCount;
-  return {
-    total,
-    closedCount,
-    contactedCount,
-    uncontactedCount,
-    closeRate: total > 0 ? (closedCount / total) * 100 : 0,
-    contactRate: total > 0 ? (contactedCount / total) * 100 : 0,
-  };
-}
-
-// ─── Date filter (shared) ───────────────────────────────────────────────────
 function DateFilter({ datePreset, setDatePreset, customStart, setCustomStart, customEnd, setCustomEnd }) {
   if (datePreset === 'Custom') {
     return (
@@ -210,14 +169,12 @@ function DateFilter({ datePreset, setDatePreset, customStart, setCustomStart, cu
   return <SelectInline value={datePreset} onChange={setDatePreset} options={DATE_PRESETS} />;
 }
 
-// ─── Dashboard ──────────────────────────────────────────────────────────────
-function Dashboard({ entries, prospects, closers, loading }) {
+function Dashboard({ entries, closers, loading }) {
   const [closer, setCloser] = useState('All');
   const [datePreset, setDatePreset] = useState('Last 7 days');
   const [customStart, setCustomStart] = useState(todayISO());
   const [customEnd, setCustomEnd] = useState(todayISO());
 
-  // If the selected closer disappears from the list (e.g. data refresh), fall back to All
   useEffect(() => {
     if (closer !== 'All' && closers.length > 0 && !closers.includes(closer)) {
       setCloser('All');
@@ -238,20 +195,18 @@ function Dashboard({ entries, prospects, closers, loading }) {
     [entries, closer, dateRange]
   );
 
+  const attempted = filteredEod.reduce((s, e) => s + (e.callsAttempted || 0), 0);
   const calls = filteredEod.reduce((s, e) => s + e.calls, 0);
   const offers = filteredEod.reduce((s, e) => s + e.offers, 0);
+  const closes = filteredEod.reduce((s, e) => s + e.closes, 0);
+  const contactRate = attempted > 0 ? (calls / attempted) * 100 : 0;
+  const closeRate = offers > 0 ? (closes / offers) * 100 : 0;
 
-  const stats = useMemo(
-    () => computeProspectStats(prospects, closer, dateRange),
-    [prospects, closer, dateRange]
-  );
-
-  const closeRateGood = stats.total > 0 && stats.closeRate >= 30;
-  const contactRateGood = stats.total > 0 && stats.contactRate >= 80;
+  const contactRateGood = attempted > 0 && contactRate >= 30;
+  const closeRateGood = offers > 0 && closeRate >= 30;
 
   return (
     <>
-      {/* Filter bar */}
       <div style={{ background: 'white', border: '1px solid #e8e3da', borderRadius: 14, padding: 12, marginBottom: 18, display: 'grid', gridTemplateColumns: '1fr 1.6fr', gap: 10, alignItems: 'start' }}>
         <SelectInline value={closer} onChange={setCloser} options={closerOptions} />
         <DateFilter
@@ -268,29 +223,29 @@ function Dashboard({ entries, prospects, closers, loading }) {
         <Kpi
           label="Calls Connected"
           value={calls}
-          sub={`${filteredEod.length} EOD ${filteredEod.length === 1 ? 'entry' : 'entries'}`}
+          sub={attempted > 0 ? `${calls}/${attempted} attempted` : `${filteredEod.length} EOD ${filteredEod.length === 1 ? 'entry' : 'entries'}`}
         />
         <Kpi
           label="Offers Given"
           value={offers}
-          sub={calls > 0 ? fmtPct1((offers/calls)*100) + ' of calls' : '—'}
+          sub={calls > 0 ? `${offers}/${calls} connects` : '—'}
         />
         <Kpi
           label="Closes"
-          value={stats.closedCount}
-          sub={stats.total > 0 ? `${stats.closedCount}/${stats.total} prospects` : 'No prospects in window'}
+          value={closes}
+          sub={offers > 0 ? `${closes}/${offers} offers` : '—'}
           tone="accent"
         />
         <Kpi
           label="Close Rate"
-          value={stats.total > 0 ? fmtPct1(stats.closeRate) : '—'}
-          sub={stats.total > 0 ? `${stats.closedCount}/${stats.total} closed` : 'No prospects in window'}
+          value={offers > 0 ? fmtPct1(closeRate) : '—'}
+          sub={offers > 0 ? 'closes ÷ offers' : 'No offers in window'}
           tone={closeRateGood ? 'good' : 'default'}
         />
         <Kpi
           label="Contact Rate"
-          value={stats.total > 0 ? fmtPct1(stats.contactRate) : '—'}
-          sub={stats.total > 0 ? `${stats.contactedCount}/${stats.total} contacted` : 'No prospects in window'}
+          value={attempted > 0 ? fmtPct1(contactRate) : '—'}
+          sub={attempted > 0 ? 'connects ÷ attempts' : 'No attempts logged'}
           tone={contactRateGood ? 'good' : 'default'}
         />
       </div>
@@ -311,8 +266,7 @@ function Dashboard({ entries, prospects, closers, loading }) {
   );
 }
 
-// ─── Leaderboard ────────────────────────────────────────────────────────────
-function Leaderboard({ entries, prospects, closers }) {
+function Leaderboard({ entries, closers }) {
   const [datePreset, setDatePreset] = useState('Last 7 days');
   const [customStart, setCustomStart] = useState(todayISO());
   const [customEnd, setCustomEnd] = useState(todayISO());
@@ -324,19 +278,17 @@ function Leaderboard({ entries, prospects, closers }) {
 
   const rows = closers.map(c => {
     const filteredEod = entries.filter(e => e.closer === c && dateInRange(e.date, dateRange));
+    const attempted = filteredEod.reduce((s, e) => s + (e.callsAttempted || 0), 0);
     const calls = filteredEod.reduce((s, e) => s + e.calls, 0);
     const offers = filteredEod.reduce((s, e) => s + e.offers, 0);
-    const stats = computeProspectStats(prospects, c, dateRange);
+    const closes = filteredEod.reduce((s, e) => s + e.closes, 0);
     return {
       closer: c,
-      calls, offers,
-      closes: stats.closedCount,   // from Airtable, not EOD
-      total: stats.total,
-      closeRate: stats.closeRate,
-      contactRate: stats.contactRate,
+      attempted, calls, offers, closes,
+      contactRate: attempted > 0 ? (calls / attempted) * 100 : 0,
+      closeRate: offers > 0 ? (closes / offers) * 100 : 0,
     };
   }).sort((a, b) => {
-    // Sort by close rate desc, then closes count desc as tiebreaker
     if (b.closeRate !== a.closeRate) return b.closeRate - a.closeRate;
     return b.closes - a.closes;
   });
@@ -357,12 +309,12 @@ function Leaderboard({ entries, prospects, closers }) {
             <tr style={{ background: '#faf7f1' }}>
               <Th style={{ width: 60 }}>Rank</Th>
               <Th>Closer</Th>
-              <Th right>Calls</Th>
+              <Th right>Attempts</Th>
+              <Th right>Connects</Th>
               <Th right>Offers</Th>
               <Th right>Closes</Th>
-              <Th right>Prospects</Th>
-              <Th right>Close rate</Th>
               <Th right>Contact rate</Th>
+              <Th right>Close rate</Th>
             </tr>
           </thead>
           <tbody>
@@ -375,12 +327,12 @@ function Leaderboard({ entries, prospects, closers }) {
                     <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 28, borderRadius: '50%', fontSize: 13, fontWeight: 600, background: rankBg, color: rankColor }}>{i + 1}</span>
                   </Td>
                   <Td style={{ fontWeight: 500, color: '#1f1b16' }}>{r.closer}</Td>
+                  <Td right>{r.attempted}</Td>
                   <Td right>{r.calls}</Td>
                   <Td right>{r.offers}</Td>
                   <Td right>{r.closes}</Td>
-                  <Td right>{r.total}</Td>
-                  <Td right>{r.total > 0 ? fmtPct1(r.closeRate) : '—'}</Td>
-                  <Td right>{r.total > 0 ? fmtPct1(r.contactRate) : '—'}</Td>
+                  <Td right>{r.attempted > 0 ? fmtPct1(r.contactRate) : '—'}</Td>
+                  <Td right>{r.offers > 0 ? fmtPct1(r.closeRate) : '—'}</Td>
                 </Tr>
               );
             })}
@@ -391,13 +343,13 @@ function Leaderboard({ entries, prospects, closers }) {
   );
 }
 
-// ─── EOD form ───────────────────────────────────────────────────────────────
 function EodForm({ entries, closers, onSubmitted }) {
   const [closer, setCloser] = useState(closers[0] || 'Tyler');
   const [date, setDate] = useState(todayISO());
   const [energy, setEnergy] = useState(null);
   const [focus, setFocus] = useState(null);
   const [biology, setBiology] = useState(null);
+  const [attempted, setAttempted] = useState('');
   const [calls, setCalls] = useState('');
   const [offers, setOffers] = useState('');
   const [closes, setCloses] = useState('');
@@ -406,20 +358,19 @@ function EodForm({ entries, closers, onSubmitted }) {
   const [submitting, setSubmitting] = useState(false);
   const [toast, setToast] = useState(null);
 
-  // Keep closer in sync if the dynamic list arrives later
   useEffect(() => {
     if (closers.length > 0 && !closers.includes(closer)) {
       setCloser(closers[0]);
     }
   }, [closers, closer]);
 
-  // Prefill if there's already an entry for this closer + date
   useEffect(() => {
     const existing = entries.find(e => e.closer === closer && e.date === date);
     if (existing) {
       setEnergy(existing.energy);
       setFocus(existing.focus);
       setBiology(existing.biology ? 'Yes' : null);
+      setAttempted(String(existing.callsAttempted ?? ''));
       setCalls(String(existing.calls ?? ''));
       setOffers(String(existing.offers ?? ''));
       setCloses(String(existing.closes ?? ''));
@@ -427,26 +378,27 @@ function EodForm({ entries, closers, onSubmitted }) {
       setObjections(existing.objections ?? '');
     } else {
       setEnergy(null); setFocus(null); setBiology(null);
-      setCalls(''); setOffers(''); setCloses('');
+      setAttempted(''); setCalls(''); setOffers(''); setCloses('');
       setRollup(''); setObjections('');
     }
   }, [closer, date, entries]);
 
+  const attemptedNum = Number(attempted) || 0;
   const callsNum = Number(calls) || 0;
   const offersNum = Number(offers) || 0;
   const closesNum = Number(closes) || 0;
+  const contactRate = attemptedNum > 0 ? (callsNum / attemptedNum) * 100 : 0;
   const offerRate = callsNum > 0 ? (offersNum / callsNum) * 100 : 0;
-  const closeRate = callsNum > 0 ? (closesNum / callsNum) * 100 : 0;
   const closeOfOffer = offersNum > 0 ? (closesNum / offersNum) * 100 : 0;
 
   const handleClear = () => {
     setEnergy(null); setFocus(null); setBiology(null);
-    setCalls(''); setOffers(''); setCloses('');
+    setAttempted(''); setCalls(''); setOffers(''); setCloses('');
     setRollup(''); setObjections('');
   };
 
   const handleSubmit = async () => {
-    if (callsNum === 0 && offersNum === 0 && closesNum === 0) {
+    if (attemptedNum === 0 && callsNum === 0 && offersNum === 0 && closesNum === 0) {
       setToast({ msg: 'Add at least one metric before submitting.', error: true });
       setTimeout(() => setToast(null), 2400);
       return;
@@ -460,6 +412,7 @@ function EodForm({ entries, closers, onSubmitted }) {
           closer, date,
           energy, focus,
           biology: biology === 'Yes',
+          callsAttempted: attemptedNum,
           calls: callsNum, offers: offersNum, closes: closesNum,
           rollup, objections,
         }),
@@ -510,14 +463,15 @@ function EodForm({ entries, closers, onSubmitted }) {
         </FormSection>
 
         <FormSection title="Today's metrics">
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 16 }}>
+            <Field label="Calls attempted (dials)"><input type="number" min="0" value={attempted} onChange={(e) => setAttempted(e.target.value)} placeholder="0" style={inputStyle} /></Field>
             <Field label="Calls connected"><input type="number" min="0" value={calls} onChange={(e) => setCalls(e.target.value)} placeholder="0" style={inputStyle} /></Field>
             <Field label="Offers given"><input type="number" min="0" value={offers} onChange={(e) => setOffers(e.target.value)} placeholder="0" style={inputStyle} /></Field>
             <Field label="Closes"><input type="number" min="0" value={closes} onChange={(e) => setCloses(e.target.value)} placeholder="0" style={inputStyle} /></Field>
           </div>
           <div style={{ fontSize: 11.5, color: '#8a7d6b', marginTop: 12, padding: '10px 12px', background: '#faf7f1', borderRadius: 8 }}>
-            {(callsNum === 0 && offersNum === 0 && closesNum === 0) ? 'Close rate will calculate once you fill in calls and closes.' : (
-              <>Offer rate: <strong>{offerRate.toFixed(1)}%</strong> · Close rate (of calls): <strong>{closeRate.toFixed(1)}%</strong> · Close rate (of offers): <strong>{closeOfOffer.toFixed(1)}%</strong></>
+            {(attemptedNum === 0 && callsNum === 0 && offersNum === 0 && closesNum === 0) ? 'Rates will calculate once you fill in the metrics.' : (
+              <>Contact rate: <strong>{contactRate.toFixed(1)}%</strong> · Offer rate: <strong>{offerRate.toFixed(1)}%</strong> · Close rate: <strong>{closeOfOffer.toFixed(1)}%</strong></>
             )}
           </div>
         </FormSection>
@@ -559,7 +513,6 @@ function EodForm({ entries, closers, onSubmitted }) {
   );
 }
 
-// ─── building blocks ────────────────────────────────────────────────────────
 function Card({ children, style = {} }) {
   return <div style={{
     background: 'white', border: '1px solid #e8e3da', borderRadius: 14,
@@ -692,9 +645,10 @@ function PastEntry({ entry, first }) {
         <div style={{ fontSize: 11.5, color: '#8a7d6b' }}>submitted {timeStr}</div>
       </div>
       <div style={{ fontSize: 12, color: '#5e5345' }}>
-        <strong style={{ color: '#1f1b16', fontWeight: 500 }}>{entry.calls}</strong> calls ·
+        <strong style={{ color: '#1f1b16', fontWeight: 500 }}>{entry.callsAttempted || 0}</strong> attempted ·
+        {' '}<strong style={{ color: '#1f1b16', fontWeight: 500 }}>{entry.calls}</strong> connected ·
         {' '}<strong style={{ color: '#1f1b16', fontWeight: 500 }}>{entry.offers}</strong> offers ·
-        {' '}<strong style={{ color: '#1f1b16', fontWeight: 500 }}>{entry.closes}</strong> closes (self-reported) ·
+        {' '}<strong style={{ color: '#1f1b16', fontWeight: 500 }}>{entry.closes}</strong> closes ·
         {' '}Energy <strong style={{ color: '#1f1b16', fontWeight: 500 }}>{entry.energy ?? '—'}</strong>/10 ·
         {' '}Focus <strong style={{ color: '#1f1b16', fontWeight: 500 }}>{entry.focus ?? '—'}</strong>/10
       </div>
