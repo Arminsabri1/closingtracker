@@ -68,21 +68,17 @@ function computeContactRate(prospects, closer) {
 }
 
 // Speed to Lead — average seconds between lead landing (Created At) and first call (Time Called)
-// Only includes prospects that have BOTH created + speedToLead value set, and Created At in the window.
+// Date-filtered by Time Called: "of calls made in this window, what was the avg speed to lead?"
 function computeSpeedToLead(prospects, closer, dateRange) {
   const eligible = prospects.filter(p =>
     (closer === 'All' || p.closer === closer) &&
     p.speedToLead != null &&
-    dateInRange(p.createdAt, dateRange)
+    dateInRange(p.timeCalled, dateRange)
   );
   const called = eligible.length;
-  if (called === 0) return { avgSec: null, called: 0, totalInWindow: 0 };
+  if (called === 0) return { avgSec: null, called: 0 };
   const sum = eligible.reduce((s, p) => s + p.speedToLead, 0);
-  // How many prospects landed in this window overall (called or not)?
-  const totalInWindow = prospects.filter(p =>
-    (closer === 'All' || p.closer === closer) && dateInRange(p.createdAt, dateRange)
-  ).length;
-  return { avgSec: sum / called, called, totalInWindow };
+  return { avgSec: sum / called, called };
 }
 
 export default function CloserTracker() {
@@ -168,7 +164,7 @@ export default function CloserTracker() {
         {activeTab === 'eod' && <EodForm entries={entries} closers={closers} onSubmitted={refresh} />}
 
         <div style={{ fontSize: 11.5, color: '#a99c87', textAlign: 'center', marginTop: 28, lineHeight: 1.7 }}>
-          Calls, offers, closes & close rate from Closer EOD (date-filtered). Contact rate from Prospect statuses (all-time, per closer). Speed to Lead from Prospect Created At → Time Called (date-filtered by lead arrival).
+          Calls, offers, closes & close rate from Closer EOD (date-filtered). Contact rate from Prospect statuses (all-time, per closer). Speed to Lead from Prospect Created At → Time Called (date-filtered by call time).
         </div>
 
       </div>
@@ -301,7 +297,7 @@ function Dashboard({ entries, prospects, closers, loading }) {
         <Kpi
           label="Speed to Lead"
           value={fmtSpeedToLead(speed.avgSec)}
-          sub={speed.called > 0 ? `${speed.called}/${speed.totalInWindow} leads called` : 'No leads called in window'}
+          sub={speed.called > 0 ? `avg across ${speed.called} ${speed.called === 1 ? 'call' : 'calls'}` : 'No calls made in window'}
           tone={speedGood ? 'good' : 'default'}
         />
       </div>
