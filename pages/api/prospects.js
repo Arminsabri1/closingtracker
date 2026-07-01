@@ -3,7 +3,7 @@
 // Closers list is the UNION of:
 //   1. all singleSelect choices on the Prospect "Closer" field (via schema API), AND
 //   2. any closer names found on actual records
-// This way a newly-added dropdown option appears even before any prospect is assigned to them.
+// Prospect records include: closer, status, createdAt, timeCalled, appointmentDate, speedToLead (sec)
 // Append ?debug=1 to see diagnostic info.
 
 const BASE_ID = 'appG9APSCkeYOQLbl';
@@ -13,6 +13,9 @@ const F = {
   closer: 'fldRsOqpZHKrQ9evO',
   status: 'fldrEbJgggOdlQTCd',
   appointmentDate: 'fld8LGO8SxiQdCCMi',
+  createdAt: 'fldAJyiB8nnyLKW9B',
+  timeCalled: 'fldZNxCzwLAU0zmKV',
+  speedToLead: 'fld5K3K1PhwGNp4qV',
 };
 
 async function fetchAll(apiKey) {
@@ -37,8 +40,6 @@ async function fetchAll(apiKey) {
   return all;
 }
 
-// Fetch the Closer singleSelect choices from the table schema.
-// Returns [] silently if the PAT lacks schema.bases:read — caller falls back to record-derived closers.
 async function fetchCloserChoicesFromSchema(apiKey) {
   try {
     const r = await fetch(`https://api.airtable.com/v0/meta/bases/${BASE_ID}/tables`, {
@@ -92,12 +93,17 @@ export default async function handler(req, res) {
       const f = rec.fields || {};
       const closerRaw = pickValue(f, 'Closer', F.closer);
       const statusRaw = pickValue(f, 'Status', F.status);
-      const apptRaw = pickValue(f, 'Appointment Date', F.appointmentDate);
+      const apptRaw = pickValue(f, 'Appointment Date', 'Call Time', F.appointmentDate);
+      const createdAtRaw = pickValue(f, 'Created At', F.createdAt);
+      const timeCalledRaw = pickValue(f, 'Time Called', F.timeCalled);
+      const speedToLeadRaw = pickValue(f, 'Speed to Lead (sec)', F.speedToLead);
 
       const closer = selectName(closerRaw);
       const status = selectName(statusRaw);
 
-      if (!closer || !apptRaw) continue;
+      // Include any prospect that has a closer assigned. No appointment date required
+      // (reactivations don't have one but still need to be counted for contact rate + speed to lead).
+      if (!closer) continue;
 
       closerSet.add(closer);
 
@@ -105,11 +111,13 @@ export default async function handler(req, res) {
         id: rec.id,
         closer,
         status: status || null,
-        appointmentDate: apptRaw,
+        appointmentDate: apptRaw || null,
+        createdAt: createdAtRaw || null,
+        timeCalled: timeCalledRaw || null,
+        speedToLead: speedToLeadRaw != null ? Number(speedToLeadRaw) : null,
       });
     }
 
-    // Union schema-defined closer choices into the closers list
     for (const name of schemaResult.choices) {
       closerSet.add(name);
     }
@@ -120,10 +128,12 @@ export default async function handler(req, res) {
       return res.status(200).json({
         total_records_from_airtable: records.length,
         prospects_extracted: prospects.length,
+        prospects_with_speed_to_lead: prospects.filter(p => p.speedToLead != null).length,
         closers,
         closers_from_schema: schemaResult.choices,
         schema_fetch_error: schemaResult.error,
         sample_record: records[0] || null,
+        sample_prospect: prospects[0] || null,
         fetched_at: new Date().toISOString(),
       });
     }
