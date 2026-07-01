@@ -3,10 +3,24 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 const FALLBACK_CLOSERS = ['Tyler', 'Jeshua'];
 const DATE_PRESETS = ['Today', 'Yesterday', 'Last 7 days', 'Last 14 days', 'Last 30 days', 'Month to date', 'Custom'];
 
+// Prospect statuses that mean "we haven't contacted them yet"
+const UNCONTACTED_STATUSES = new Set(['Hotlist', 'Follow Up']);
+
 const pad2 = (n) => String(n).padStart(2, '0');
 const toISODate = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 const todayISO = () => toISODate(new Date());
 const fmtPct1 = (n) => n.toFixed(1) + '%';
+
+// Format seconds → "X sec", "X min", "X hr Y min"
+function fmtSpeedToLead(seconds) {
+  if (seconds == null || isNaN(seconds)) return '—';
+  const s = Math.max(0, Math.round(seconds));
+  if (s < 60) return `${s} sec`;
+  if (s < 3600) return `${Math.round(s / 60)} min`;
+  const hours = Math.floor(s / 3600);
+  const mins = Math.round((s % 3600) / 60);
+  return mins > 0 ? `${hours} hr ${mins} min` : `${hours} hr`;
+}
 
 function presetToRange(preset) {
   const now = new Date();
@@ -42,9 +56,39 @@ function dateInRange(iso, range) {
   return datePart >= range.start && datePart <= range.end;
 }
 
+// Contact rate from Prospect statuses, all-time, per closer
+// closer can be 'All' to mean every closer combined
+function computeContactRate(prospects, closer) {
+  const filtered = prospects.filter(p => closer === 'All' || p.closer === closer);
+  const total = filtered.length;
+  if (total === 0) return { total: 0, contacted: 0, uncontacted: 0, rate: 0 };
+  const uncontacted = filtered.filter(p => UNCONTACTED_STATUSES.has(p.status)).length;
+  const contacted = total - uncontacted;
+  return { total, contacted, uncontacted, rate: (contacted / total) * 100 };
+}
+
+// Speed to Lead — average seconds between lead landing (Created At) and first call (Time Called)
+// Only includes prospects that have BOTH created + speedToLead value set, and Created At in the window.
+function computeSpeedToLead(prospects, closer, dateRange) {
+  const eligible = prospects.filter(p =>
+    (closer === 'All' || p.closer === closer) &&
+    p.speedToLead != null &&
+    dateInRange(p.createdAt, dateRange)
+  );
+  const called = eligible.length;
+  if (called === 0) return { avgSec: null, called: 0, totalInWindow: 0 };
+  const sum = eligible.reduce((s, p) => s + p.speedToLead, 0);
+  // How many prospects landed in this window overall (called or not)?
+  const totalInWindow = prospects.filter(p =>
+    (closer === 'All' || p.closer === closer) && dateInRange(p.createdAt, dateRange)
+  ).length;
+  return { avgSec: sum / called, called, totalInWindow };
+}
+
 export default function CloserTracker() {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [entries, setEntries] = useState([]);
+  const [prospects, setProspects] = useState([]);
   const [closersFromAirtable, setClosersFromAirtable] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -55,7 +99,7 @@ export default function CloserTracker() {
     setError(null);
     Promise.all([
       fetch('/api/eod-list').then(r => r.json()),
-      fetch('/api/prospects').then(r => r.json()).catch(() => ({ closers: [] })),
+      fetch('/api/prospects').then(r => r.json()).catch(() => ({ prospects: [], closers: [] })),
     ])
       .then(([eodData, prospectsData]) => {
         if (eodData.error) {
@@ -63,8 +107,9 @@ export default function CloserTracker() {
         } else {
           setEntries(eodData.entries || []);
         }
-        if (prospectsData && prospectsData.closers) {
-          setClosersFromAirtable(prospectsData.closers);
+        if (prospectsData && !prospectsData.error) {
+          setProspects(prospectsData.prospects || []);
+          setClosersFromAirtable(prospectsData.closers || []);
         }
         setFetchedAt(eodData.fetched_at || null);
         setLoading(false);
@@ -118,12 +163,12 @@ export default function CloserTracker() {
           </div>
         )}
 
-        {activeTab === 'dashboard' && <Dashboard entries={entries} closers={closers} loading={loading} />}
-        {activeTab === 'leaderboard' && <Leaderboard entries={entries} closers={closers} />}
+        {activeTab === 'dashboard' && <Dashboard entries={entries} prospects={prospects} closers={closers} loading={loading} />}
+        {activeTab === 'leaderboard' && <Leaderboard entries={entries} prospects={prospects} closers={closers} />}
         {activeTab === 'eod' && <EodForm entries={entries} closers={closers} onSubmitted={refresh} />}
 
         <div style={{ fontSize: 11.5, color: '#a99c87', textAlign: 'center', marginTop: 28, lineHeight: 1.7 }}>
-          All metrics pulled live from Closer EOD table (self-reported by closer).
+          Calls, offers, closes & close rate from Closer EOD (date-filtered). Contact rate from Prospect statuses (all-time, per closer). Speed to Lead from Prospect Created At → Time Called (date-filtered by lead arrival).
         </div>
 
       </div>
@@ -169,7 +214,7 @@ function DateFilter({ datePreset, setDatePreset, customStart, setCustomStart, cu
   return <SelectInline value={datePreset} onChange={setDatePreset} options={DATE_PRESETS} />;
 }
 
-function Dashboard({ entries, closers, loading }) {
+function Dashboard({ entries, prospects, closers, loading }) {
   const [closer, setCloser] = useState('All');
   const [datePreset, setDatePreset] = useState('Last 7 days');
   const [customStart, setCustomStart] = useState(todayISO());
@@ -195,15 +240,20 @@ function Dashboard({ entries, closers, loading }) {
     [entries, closer, dateRange]
   );
 
-  const attempted = filteredEod.reduce((s, e) => s + (e.callsAttempted || 0), 0);
   const calls = filteredEod.reduce((s, e) => s + e.calls, 0);
   const offers = filteredEod.reduce((s, e) => s + e.offers, 0);
   const closes = filteredEod.reduce((s, e) => s + e.closes, 0);
-  const contactRate = attempted > 0 ? (calls / attempted) * 100 : 0;
-  const closeRate = offers > 0 ? (closes / offers) * 100 : 0;
+  const closeRate = calls > 0 ? (closes / calls) * 100 : 0;
 
-  const contactRateGood = attempted > 0 && contactRate >= 30;
-  const closeRateGood = offers > 0 && closeRate >= 30;
+  // Contact rate is all-time, NOT date-filtered, per closer
+  const contact = useMemo(() => computeContactRate(prospects, closer), [prospects, closer]);
+
+  // Speed to Lead IS date-filtered (by Created At)
+  const speed = useMemo(() => computeSpeedToLead(prospects, closer, dateRange), [prospects, closer, dateRange]);
+
+  const closeRateGood = calls > 0 && closeRate >= 20;
+  const contactRateGood = contact.total > 0 && contact.rate >= 80;
+  const speedGood = speed.avgSec != null && speed.avgSec <= 300; // 5 min or better
 
   return (
     <>
@@ -219,16 +269,16 @@ function Dashboard({ entries, closers, loading }) {
       <div style={{ fontSize: 10.5, fontWeight: 600, letterSpacing: '0.14em', color: '#8a7d6b', textTransform: 'uppercase', marginBottom: 10, paddingLeft: 4 }}>
         Performance
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10, marginBottom: 22 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 10, marginBottom: 22 }}>
         <Kpi
           label="Calls Connected"
           value={calls}
-          sub={attempted > 0 ? `${calls}/${attempted} attempted` : `${filteredEod.length} EOD ${filteredEod.length === 1 ? 'entry' : 'entries'}`}
+          sub={`${filteredEod.length} EOD ${filteredEod.length === 1 ? 'entry' : 'entries'}`}
         />
         <Kpi
           label="Offers Given"
           value={offers}
-          sub={calls > 0 ? `${offers}/${calls} connects` : '—'}
+          sub={calls > 0 ? `${offers}/${calls} calls` : '—'}
         />
         <Kpi
           label="Closes"
@@ -238,15 +288,21 @@ function Dashboard({ entries, closers, loading }) {
         />
         <Kpi
           label="Close Rate"
-          value={offers > 0 ? fmtPct1(closeRate) : '—'}
-          sub={offers > 0 ? 'closes ÷ offers' : 'No offers in window'}
+          value={calls > 0 ? fmtPct1(closeRate) : '—'}
+          sub={calls > 0 ? 'closes ÷ calls' : 'No calls in window'}
           tone={closeRateGood ? 'good' : 'default'}
         />
         <Kpi
           label="Contact Rate"
-          value={attempted > 0 ? fmtPct1(contactRate) : '—'}
-          sub={attempted > 0 ? 'connects ÷ attempts' : 'No attempts logged'}
+          value={contact.total > 0 ? fmtPct1(contact.rate) : '—'}
+          sub={contact.total > 0 ? `${contact.contacted}/${contact.total} prospects (all-time)` : 'No prospects assigned'}
           tone={contactRateGood ? 'good' : 'default'}
+        />
+        <Kpi
+          label="Speed to Lead"
+          value={fmtSpeedToLead(speed.avgSec)}
+          sub={speed.called > 0 ? `${speed.called}/${speed.totalInWindow} leads called` : 'No leads called in window'}
+          tone={speedGood ? 'good' : 'default'}
         />
       </div>
 
@@ -266,7 +322,7 @@ function Dashboard({ entries, closers, loading }) {
   );
 }
 
-function Leaderboard({ entries, closers }) {
+function Leaderboard({ entries, prospects, closers }) {
   const [datePreset, setDatePreset] = useState('Last 7 days');
   const [customStart, setCustomStart] = useState(todayISO());
   const [customEnd, setCustomEnd] = useState(todayISO());
@@ -278,15 +334,19 @@ function Leaderboard({ entries, closers }) {
 
   const rows = closers.map(c => {
     const filteredEod = entries.filter(e => e.closer === c && dateInRange(e.date, dateRange));
-    const attempted = filteredEod.reduce((s, e) => s + (e.callsAttempted || 0), 0);
     const calls = filteredEod.reduce((s, e) => s + e.calls, 0);
     const offers = filteredEod.reduce((s, e) => s + e.offers, 0);
     const closes = filteredEod.reduce((s, e) => s + e.closes, 0);
+    const contact = computeContactRate(prospects, c);
+    const speed = computeSpeedToLead(prospects, c, dateRange);
     return {
       closer: c,
-      attempted, calls, offers, closes,
-      contactRate: attempted > 0 ? (calls / attempted) * 100 : 0,
-      closeRate: offers > 0 ? (closes / offers) * 100 : 0,
+      calls, offers, closes,
+      closeRate: calls > 0 ? (closes / calls) * 100 : 0,
+      contactRate: contact.rate,
+      contactTotal: contact.total,
+      speedAvgSec: speed.avgSec,
+      speedCalled: speed.called,
     };
   }).sort((a, b) => {
     if (b.closeRate !== a.closeRate) return b.closeRate - a.closeRate;
@@ -309,12 +369,12 @@ function Leaderboard({ entries, closers }) {
             <tr style={{ background: '#faf7f1' }}>
               <Th style={{ width: 60 }}>Rank</Th>
               <Th>Closer</Th>
-              <Th right>Attempts</Th>
-              <Th right>Connects</Th>
+              <Th right>Calls</Th>
               <Th right>Offers</Th>
               <Th right>Closes</Th>
-              <Th right>Contact rate</Th>
               <Th right>Close rate</Th>
+              <Th right>Contact rate</Th>
+              <Th right>Speed to lead</Th>
             </tr>
           </thead>
           <tbody>
@@ -327,12 +387,12 @@ function Leaderboard({ entries, closers }) {
                     <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 28, borderRadius: '50%', fontSize: 13, fontWeight: 600, background: rankBg, color: rankColor }}>{i + 1}</span>
                   </Td>
                   <Td style={{ fontWeight: 500, color: '#1f1b16' }}>{r.closer}</Td>
-                  <Td right>{r.attempted}</Td>
                   <Td right>{r.calls}</Td>
                   <Td right>{r.offers}</Td>
                   <Td right>{r.closes}</Td>
-                  <Td right>{r.attempted > 0 ? fmtPct1(r.contactRate) : '—'}</Td>
-                  <Td right>{r.offers > 0 ? fmtPct1(r.closeRate) : '—'}</Td>
+                  <Td right>{r.calls > 0 ? fmtPct1(r.closeRate) : '—'}</Td>
+                  <Td right>{r.contactTotal > 0 ? fmtPct1(r.contactRate) : '—'}</Td>
+                  <Td right>{fmtSpeedToLead(r.speedAvgSec)}</Td>
                 </Tr>
               );
             })}
@@ -349,7 +409,6 @@ function EodForm({ entries, closers, onSubmitted }) {
   const [energy, setEnergy] = useState(null);
   const [focus, setFocus] = useState(null);
   const [biology, setBiology] = useState(null);
-  const [attempted, setAttempted] = useState('');
   const [calls, setCalls] = useState('');
   const [offers, setOffers] = useState('');
   const [closes, setCloses] = useState('');
@@ -370,7 +429,6 @@ function EodForm({ entries, closers, onSubmitted }) {
       setEnergy(existing.energy);
       setFocus(existing.focus);
       setBiology(existing.biology ? 'Yes' : null);
-      setAttempted(String(existing.callsAttempted ?? ''));
       setCalls(String(existing.calls ?? ''));
       setOffers(String(existing.offers ?? ''));
       setCloses(String(existing.closes ?? ''));
@@ -378,27 +436,25 @@ function EodForm({ entries, closers, onSubmitted }) {
       setObjections(existing.objections ?? '');
     } else {
       setEnergy(null); setFocus(null); setBiology(null);
-      setAttempted(''); setCalls(''); setOffers(''); setCloses('');
+      setCalls(''); setOffers(''); setCloses('');
       setRollup(''); setObjections('');
     }
   }, [closer, date, entries]);
 
-  const attemptedNum = Number(attempted) || 0;
   const callsNum = Number(calls) || 0;
   const offersNum = Number(offers) || 0;
   const closesNum = Number(closes) || 0;
-  const contactRate = attemptedNum > 0 ? (callsNum / attemptedNum) * 100 : 0;
   const offerRate = callsNum > 0 ? (offersNum / callsNum) * 100 : 0;
-  const closeOfOffer = offersNum > 0 ? (closesNum / offersNum) * 100 : 0;
+  const closeOfCall = callsNum > 0 ? (closesNum / callsNum) * 100 : 0;
 
   const handleClear = () => {
     setEnergy(null); setFocus(null); setBiology(null);
-    setAttempted(''); setCalls(''); setOffers(''); setCloses('');
+    setCalls(''); setOffers(''); setCloses('');
     setRollup(''); setObjections('');
   };
 
   const handleSubmit = async () => {
-    if (attemptedNum === 0 && callsNum === 0 && offersNum === 0 && closesNum === 0) {
+    if (callsNum === 0 && offersNum === 0 && closesNum === 0) {
       setToast({ msg: 'Add at least one metric before submitting.', error: true });
       setTimeout(() => setToast(null), 2400);
       return;
@@ -412,7 +468,6 @@ function EodForm({ entries, closers, onSubmitted }) {
           closer, date,
           energy, focus,
           biology: biology === 'Yes',
-          callsAttempted: attemptedNum,
           calls: callsNum, offers: offersNum, closes: closesNum,
           rollup, objections,
         }),
@@ -463,15 +518,14 @@ function EodForm({ entries, closers, onSubmitted }) {
         </FormSection>
 
         <FormSection title="Today's metrics">
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 16 }}>
-            <Field label="Calls attempted (dials)"><input type="number" min="0" value={attempted} onChange={(e) => setAttempted(e.target.value)} placeholder="0" style={inputStyle} /></Field>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16 }}>
             <Field label="Calls connected"><input type="number" min="0" value={calls} onChange={(e) => setCalls(e.target.value)} placeholder="0" style={inputStyle} /></Field>
             <Field label="Offers given"><input type="number" min="0" value={offers} onChange={(e) => setOffers(e.target.value)} placeholder="0" style={inputStyle} /></Field>
             <Field label="Closes"><input type="number" min="0" value={closes} onChange={(e) => setCloses(e.target.value)} placeholder="0" style={inputStyle} /></Field>
           </div>
           <div style={{ fontSize: 11.5, color: '#8a7d6b', marginTop: 12, padding: '10px 12px', background: '#faf7f1', borderRadius: 8 }}>
-            {(attemptedNum === 0 && callsNum === 0 && offersNum === 0 && closesNum === 0) ? 'Rates will calculate once you fill in the metrics.' : (
-              <>Contact rate: <strong>{contactRate.toFixed(1)}%</strong> · Offer rate: <strong>{offerRate.toFixed(1)}%</strong> · Close rate: <strong>{closeOfOffer.toFixed(1)}%</strong></>
+            {(callsNum === 0 && offersNum === 0 && closesNum === 0) ? 'Rates will calculate once you fill in the metrics.' : (
+              <>Offer rate: <strong>{offerRate.toFixed(1)}%</strong> · Close rate: <strong>{closeOfCall.toFixed(1)}%</strong></>
             )}
           </div>
         </FormSection>
@@ -645,8 +699,7 @@ function PastEntry({ entry, first }) {
         <div style={{ fontSize: 11.5, color: '#8a7d6b' }}>submitted {timeStr}</div>
       </div>
       <div style={{ fontSize: 12, color: '#5e5345' }}>
-        <strong style={{ color: '#1f1b16', fontWeight: 500 }}>{entry.callsAttempted || 0}</strong> attempted ·
-        {' '}<strong style={{ color: '#1f1b16', fontWeight: 500 }}>{entry.calls}</strong> connected ·
+        <strong style={{ color: '#1f1b16', fontWeight: 500 }}>{entry.calls}</strong> calls ·
         {' '}<strong style={{ color: '#1f1b16', fontWeight: 500 }}>{entry.offers}</strong> offers ·
         {' '}<strong style={{ color: '#1f1b16', fontWeight: 500 }}>{entry.closes}</strong> closes ·
         {' '}Energy <strong style={{ color: '#1f1b16', fontWeight: 500 }}>{entry.energy ?? '—'}</strong>/10 ·
